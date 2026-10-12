@@ -1,5 +1,5 @@
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
   updateProfile,
@@ -15,9 +15,14 @@ import {
   addSocial,
   updateSocial,
   deleteSocial,
+  saveStarted,
   saveSucceeded,
+  saveFailed,
+  loadedResume,
 } from "./features/resume/resumeSlice";
 import "./App.css";
+
+const API_URL = "http://localhost:4000/api/resumes";
 
 const steps = ["Profile", "Education", "Skills", "Projects", "Social Media"];
 
@@ -27,6 +32,9 @@ export default function App() {
 
   const [step, setStep] = useState(0);
   const [saved, setSaved] = useState(false);
+  const [savedResumes, setSavedResumes] = useState([]);
+  const [selectedResumeId, setSelectedResumeId] = useState("");
+  const [error, setError] = useState("");
 
   const profile = resume.profile || {};
   const education = resume.education || [];
@@ -35,42 +43,155 @@ export default function App() {
   const social = resume.social || [];
 
   const handleProfile = (e) => {
-    dispatch(
-      updateProfile({
-        [e.target.name]: e.target.value,
-      })
-    );
+    dispatch(updateProfile({ [e.target.name]: e.target.value }));
   };
 
-  const handleSave = () => {
-    const id = resume.id || String(Date.now());
+  // Load the list of resumes stored by the backend.
+  const loadResumeList = async () => {
+    try {
+      const response = await fetch(API_URL);
 
-    localStorage.setItem(
-      "resume",
-      JSON.stringify({ ...resume, id })
-    );
+      if (!response.ok) {
+        throw new Error("Unable to retrieve saved resumes.");
+      }
 
-    dispatch(saveSucceeded(id));
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+      const data = await response.json();
+      setSavedResumes(Array.isArray(data) ? data : []);
+      setError("");
+    } catch (err) {
+      console.error(err);
+      setError("Cannot connect to the server. Start the backend server.");
+    }
   };
 
-  const next = () => setStep((current) => Math.min(current + 1, 4));
-  const back = () => setStep((current) => Math.max(current - 1, 0));
+  useEffect(() => {
+    loadResumeList();
+  }, []);
+
+  // Save a new resume or update an existing resume.
+  const handleSave = async () => {
+    dispatch(saveStarted());
+    setSaved(false);
+    setError("");
+
+    try {
+      const resumeId = resume.savedResumeId || resume.id;
+
+      const payload = {
+        profile,
+        education,
+        skills,
+        projects,
+        social,
+        name:
+          [profile.fname, profile.lname].filter(Boolean).join(" ") ||
+          "Untitled Resume",
+      };
+
+      const response = await fetch(
+        resumeId ? `${API_URL}/${resumeId}` : API_URL,
+        {
+          method: resumeId ? "PUT" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("The server could not save your resume.");
+      }
+
+      const result = await response.json();
+      const id = result.id || result._id || resumeId;
+
+      if (!id) {
+        throw new Error("The server did not return a resume ID.");
+      }
+
+      dispatch(saveSucceeded(id));
+      setSelectedResumeId(String(id));
+      setSaved(true);
+
+      await loadResumeList();
+    } catch (err) {
+      dispatch(saveFailed(err.message));
+      setError(err.message);
+      console.error("Save failed:", err);
+    }
+  };
+
+  // Retrieve a saved resume from the backend.
+  const handleLoadResume = async () => {
+    if (!selectedResumeId) return;
+
+    setError("");
+
+    try {
+      const response = await fetch(`${API_URL}/${selectedResumeId}`);
+
+      if (!response.ok) {
+        throw new Error("Unable to load this resume.");
+      }
+
+      const data = await response.json();
+      dispatch(loadedResume(data));
+      setSaved(true);
+      setStep(0);
+    } catch (err) {
+      setError(err.message);
+      console.error("Load failed:", err);
+    }
+  };
 
   return (
     <div className="app">
       <header className="header">
         <div>
           <h1>Resume Builder</h1>
-          <p>Create a professional resume in minutes.</p>
+          <p>Create and manage your professional resume.</p>
         </div>
+
         <button className="save-btn" onClick={handleSave}>
           Save Resume
         </button>
       </header>
 
-      <div className="steps">
+      <div className="load-resume">
+        <select
+          value={selectedResumeId}
+          onChange={(e) => setSelectedResumeId(e.target.value)}
+        >
+          <option value="">Select a saved resume</option>
+          {savedResumes.map((item) => {
+            const id = item.id || item._id;
+            return (
+              <option key={id} value={id}>
+                {item.name ||
+                  [
+                    item.profile?.fname,
+                    item.profile?.lname,
+                  ].filter(Boolean).join(" ") ||
+                  "Untitled Resume"}
+              </option>
+            );
+          })}
+        </select>
+
+        <button
+          className="secondary-btn"
+          onClick={handleLoadResume}
+          disabled={!selectedResumeId}
+        >
+          Load Resume
+        </button>
+      </div>
+
+      {error && <p className="error-message">{error}</p>}
+      {saved && <p className="success-message">Resume saved or loaded successfully.</p>}
+
+      <nav className="steps">
         {steps.map((item, index) => (
           <button
             key={item}
@@ -81,7 +202,7 @@ export default function App() {
             {item}
           </button>
         ))}
-      </div>
+      </nav>
 
       <main className="layout">
         <section className="form-panel">
@@ -123,7 +244,7 @@ export default function App() {
                     name="url"
                     value={profile.url || ""}
                     onChange={handleProfile}
-                    placeholder="Portfolio or website URL"
+                    placeholder="Portfolio URL"
                   />
                 </Field>
 
@@ -143,7 +264,7 @@ export default function App() {
           {step === 1 && (
             <>
               <h2>Education</h2>
-              <p className="subtitle">Add your academic qualifications.</p>
+              <p className="subtitle">Add your qualifications.</p>
 
               {education.map((item, index) => (
                 <div className="entry" key={item.id || index}>
@@ -225,18 +346,22 @@ export default function App() {
           {step === 2 && (
             <>
               <h2>Skills</h2>
-              <p className="subtitle">Highlight your technical skills.</p>
+              <p className="subtitle">Add your skills.</p>
 
-              {skills.map((skill, index) => (
+              {skills.map((item, index) => (
                 <div className="inline-entry" key={index}>
                   <input
                     name="skill"
-                    value={typeof skill === "string" ? skill : skill.skill || ""}
+                    value={typeof item === "string" ? item : item.skill || ""}
                     onChange={(e) =>
-                      dispatch(updateSkill({ index, skill: e.target.value }))
+                      dispatch(updateSkill({
+                        index,
+                        skill: e.target.value,
+                      }))
                     }
-                    placeholder="e.g. React.js"
+                    placeholder="Enter a skill"
                   />
+
                   <button
                     id="delete_skill"
                     className="delete-btn"
@@ -260,7 +385,7 @@ export default function App() {
           {step === 3 && (
             <>
               <h2>Projects</h2>
-              <p className="subtitle">Showcase your best work.</p>
+              <p className="subtitle">Showcase your projects.</p>
 
               {projects.map((item, index) => (
                 <div className="entry" key={item.id || index}>
@@ -330,7 +455,7 @@ export default function App() {
           {step === 4 && (
             <>
               <h2>Social Media</h2>
-              <p className="subtitle">Add links to your professional profiles.</p>
+              <p className="subtitle">Add your profile links.</p>
 
               {social.map((item, index) => (
                 <div className="inline-entry" key={index}>
@@ -338,11 +463,16 @@ export default function App() {
                     name="Social"
                     value={typeof item === "string" ? item : item.Social || ""}
                     onChange={(e) =>
-                      dispatch(updateSocial({ index, value: e.target.value }))
+                      dispatch(updateSocial({
+                        index,
+                        value: e.target.value,
+                      }))
                     }
-                    placeholder="LinkedIn, GitHub, portfolio URL"
+                    placeholder="LinkedIn or GitHub URL"
                   />
+
                   <button
+                    id="delete"
                     className="delete-btn"
                     onClick={() => dispatch(deleteSocial(index))}
                   >
@@ -365,7 +495,7 @@ export default function App() {
             <button
               id="back"
               className="secondary-btn"
-              onClick={back}
+              onClick={() => setStep((current) => Math.max(0, current - 1))}
               disabled={step === 0}
             >
               Back
@@ -375,7 +505,7 @@ export default function App() {
               <button
                 id="next"
                 className="primary-btn"
-                onClick={next}
+                onClick={() => setStep((current) => Math.min(4, current + 1))}
               >
                 Next
               </button>
@@ -389,10 +519,6 @@ export default function App() {
               </button>
             )}
           </div>
-
-          {saved && (
-            <p className="success-message">Resume saved successfully!</p>
-          )}
         </section>
 
         <ResumePreview
@@ -457,7 +583,9 @@ function ResumePreview({ profile, education, skills, projects, social }) {
           <ResumeSection title="Skills">
             <p>
               {skills
-                .map((item) => typeof item === "string" ? item : item.skill)
+                .map((item) =>
+                  typeof item === "string" ? item : item.skill
+                )
                 .filter(Boolean)
                 .join(" • ")}
             </p>
@@ -477,7 +605,7 @@ function ResumePreview({ profile, education, skills, projects, social }) {
         )}
 
         {social.length > 0 && (
-          <ResumeSection title="Links">
+          <ResumeSection title="Social Media">
             {social.map((item, index) => (
               <p key={index}>
                 {typeof item === "string" ? item : item.Social}
